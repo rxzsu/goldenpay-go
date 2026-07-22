@@ -1,6 +1,7 @@
 package goldenpay
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -361,4 +362,274 @@ func TestIsAuthError(t *testing.T) {
 	if IsAuthError(nil) { t.Error("nil is not auth error") }
 	if IsAuthError(newError(ErrHTTP, "http")) { t.Error("ErrHTTP is not auth error") }
 	if !IsAuthError(newError(ErrUnauthorized, "auth")) { t.Error("ErrUnauthorized should be auth error") }
+}
+
+// ---------------------------------------------------------------------------
+// OfferEditBuilder
+// ---------------------------------------------------------------------------
+
+func TestOfferEditBuilder(t *testing.T) {
+	edit := NewOfferEditBuilder().
+		Quantity("5").
+		Price("399").
+		Active(true).
+		Build()
+
+	if edit.Quantity == nil || *edit.Quantity != "5" { t.Error("expected quantity=5") }
+	if edit.Price == nil || *edit.Price != "399" { t.Error("expected price=399") }
+	if edit.Active == nil || *edit.Active != true { t.Error("expected active=true") }
+}
+
+// ---------------------------------------------------------------------------
+// Utils
+// ---------------------------------------------------------------------------
+
+func TestRandomTag(t *testing.T) {
+	tag := randomTag()
+	if len(tag) != 10 { t.Errorf("expected length 10, got %d", len(tag)) }
+	for _, ch := range tag {
+		if !strings.ContainsRune(tagAlphabet, ch) {
+			t.Errorf("unexpected char %c in tag", ch)
+		}
+	}
+}
+
+func TestExtractPHPSessID(t *testing.T) {
+	cookies := []string{
+		"golden_key=abc",
+		"PHPSESSID=sess123; path=/",
+	}
+	sess := extractPHPSessID(cookies)
+	if sess != "sess123" { t.Errorf("expected sess123, got %s", sess) }
+
+	sess = extractPHPSessID([]string{"golden_key=abc"})
+	if sess != "" { t.Errorf("expected empty, got %s", sess) }
+}
+
+func TestRetrySleep(t *testing.T) {
+	if retrySleep(1, 300) != 300 { t.Error("attempt 1 should be base") }
+	if retrySleep(2, 300) != 600 { t.Error("attempt 2 should be 2x") }
+	if retrySleep(3, 300) != 1200 { t.Error("attempt 3 should be 4x") }
+}
+
+// ---------------------------------------------------------------------------
+// Automation: DeliveryMessageBuilder
+// ---------------------------------------------------------------------------
+
+func TestDeliveryMessageBuilderDefault(t *testing.T) {
+	b := NewDeliveryMessageBuilder()
+	if b.Greeting != "Thanks for your purchase!" { t.Errorf("unexpected greeting: %s", b.Greeting) }
+}
+
+func TestDeliveryMessageBuilderFormatItems(t *testing.T) {
+	items := []DeliveryItem{{Value: "KEY-1"}, {Value: "KEY-2"}}
+
+	b := NewDeliveryMessageBuilder().SetItemFormat(ItemFormatNumbered)
+	out := b.FormatItems(items)
+	if !strings.Contains(out, "1. KEY-1") || !strings.Contains(out, "2. KEY-2") {
+		t.Errorf("numbered format failed: %s", out)
+	}
+
+	b = NewDeliveryMessageBuilder().SetItemFormat(ItemFormatPlainLines)
+	out = b.FormatItems(items)
+	if out != "KEY-1\nKEY-2" { t.Errorf("plain format failed: %s", out) }
+
+	b = NewDeliveryMessageBuilder().SetItemFormat(ItemFormatCodeBlock)
+	out = b.FormatItems(items)
+	if !strings.Contains(out, "```") { t.Errorf("code block missing backticks: %s", out) }
+}
+
+func TestDeliveryMessageBuilderBuildMessage(t *testing.T) {
+	order := &OrderInfo{ID: "ORD1", BuyerUsername: "buyer1"}
+	result := &DeliveryResult{OrderID: "ORD1", ProductKey: "Steam Keys", Delivered: []DeliveryItem{{Value: "KEY-1"}}}
+
+	msg := NewDeliveryMessageBuilder().BuildMessage(order, result)
+	if !strings.Contains(msg, "Order: #ORD1") { t.Error("missing order id") }
+	if !strings.Contains(msg, "Product: Steam Keys") { t.Error("missing product key") }
+	if !strings.Contains(msg, "Buyer: buyer1") { t.Error("missing buyer") }
+	if !strings.Contains(msg, "1. KEY-1") { t.Error("missing item") }
+}
+
+func TestDeliveryMessageBuilderTemplate(t *testing.T) {
+	order := &OrderInfo{ID: "ORD1", BuyerUsername: "buyer1"}
+	result := &DeliveryResult{OrderID: "ORD1", ProductKey: "Steam Keys", Delivered: []DeliveryItem{{Value: "KEY-1"}}}
+
+	msg := NewDeliveryMessageBuilder().
+		SetTemplate("Hello {buyer}, order {order_id}: {items}").
+		BuildMessage(order, result)
+	if msg != "Hello buyer1, order ORD1: 1. KEY-1" { t.Errorf("template failed: %s", msg) }
+}
+
+func TestDeliveryMessageBuilderNoFooter(t *testing.T) {
+	order := &OrderInfo{ID: "ORD1", BuyerUsername: "buyer1"}
+	result := &DeliveryResult{OrderID: "ORD1", ProductKey: "SK", Delivered: []DeliveryItem{{Value: "K"}}}
+
+	msg := NewDeliveryMessageBuilder().NoFooter().BuildMessage(order, result)
+	if strings.Contains(msg, "If you have any questions") {
+		t.Error("footer should be removed")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Automation: DeliveryService
+// ---------------------------------------------------------------------------
+
+func sampleOrder() *OrderInfo {
+	return &OrderInfo{
+		ID: "ORDER1", BuyerUsername: "buyer", BuyerID: 2,
+		ChatID: "users-1-2", Description: "Steam",
+		SubcategoryName: "Steam Keys", Amount: 2, Status: OrderPaid,
+	}
+}
+
+func TestDeliveryServiceDeliver(t *testing.T) {
+	s := NewDeliveryService()
+	s.AddProduct("Steam Keys", []DeliveryItem{
+		{Value: "KEY-1"}, {Value: "KEY-2"}, {Value: "KEY-3"},
+	})
+
+	result, err := s.Deliver(ExactSubcategoryMatcher{}, sampleOrder())
+	if err != nil { t.Fatalf("deliver: %v", err) }
+	if result.ProductKey != "Steam Keys" { t.Errorf("wrong product: %s", result.ProductKey) }
+	if len(result.Delivered) != 2 { t.Errorf("expected 2 items, got %d", len(result.Delivered)) }
+
+	remaining := s.RemainingItems("Steam Keys")
+	if remaining != 1 { t.Errorf("expected 1 remaining, got %d", remaining) }
+}
+
+func TestDeliveryServiceProductNotFound(t *testing.T) {
+	s := NewDeliveryService()
+	_, err := s.Deliver(ExactSubcategoryMatcher{}, sampleOrder())
+	if err != ErrProductNotFound { t.Errorf("expected ErrProductNotFound, got %v", err) }
+}
+
+func TestDeliveryServiceNotEnoughItems(t *testing.T) {
+	s := NewDeliveryService()
+	s.AddProduct("Steam Keys", []DeliveryItem{{Value: "KEY-1"}})
+	_, err := s.Deliver(ExactSubcategoryMatcher{}, sampleOrder())
+	if err == nil || !strings.Contains(err.Error(), "not enough") {
+		t.Errorf("expected not enough items error, got %v", err)
+	}
+}
+
+func TestDeliveryServiceReleaseReserved(t *testing.T) {
+	s := NewDeliveryService()
+	s.AddProduct("Steam Keys", []DeliveryItem{{Value: "KEY-1"}, {Value: "KEY-2"}})
+
+	reserved, err := s.Reserve(ExactSubcategoryMatcher{}, sampleOrder())
+	if err != nil { t.Fatalf("reserve: %v", err) }
+	if s.RemainingItems("Steam Keys") != 0 { t.Error("expected 0 remaining after reserve") }
+
+	s.ReleaseReserved(reserved)
+	if s.RemainingItems("Steam Keys") != 2 { t.Errorf("expected 2 after release, got %d", s.RemainingItems("Steam Keys")) }
+}
+
+// ---------------------------------------------------------------------------
+// Automation: MemoryDeliveryStore
+// ---------------------------------------------------------------------------
+
+func TestMemoryDeliveryStore(t *testing.T) {
+	store := NewMemoryDeliveryStore()
+	result := &DeliveryResult{OrderID: "ORD1", ProductKey: "SK", Delivered: []DeliveryItem{{Value: "K"}}}
+
+	ok, _ := store.ContainsOrder("ORD1")
+	if ok { t.Error("should not contain order yet") }
+
+	if err := store.ClaimPending(result); err != nil { t.Fatalf("claim: %v", err) }
+	if err := store.CommitDelivered(result); err != nil { t.Fatalf("commit: %v", err) }
+
+	ok, _ = store.ContainsOrder("ORD1")
+	if !ok { t.Error("should contain order") }
+
+	// Duplicate claim should fail
+	if err := store.ClaimPending(result); err != ErrAlreadyDelivered {
+		t.Errorf("expected ErrAlreadyDelivered, got %v", err)
+	}
+}
+
+func TestMemoryDeliveryStoreReleasePending(t *testing.T) {
+	store := NewMemoryDeliveryStore()
+	result := &DeliveryResult{OrderID: "ORD1", ProductKey: "SK", Delivered: []DeliveryItem{{Value: "K"}}}
+
+	store.ClaimPending(result)
+	store.ReleasePending("ORD1")
+
+	ok, _ := store.ContainsOrder("ORD1")
+	if ok { t.Error("should not contain after release") }
+}
+
+// ---------------------------------------------------------------------------
+// Automation: DeliveryService + Store integration
+// ---------------------------------------------------------------------------
+
+func TestDeliveryServiceDeliverOrder(t *testing.T) {
+	s := NewDeliveryService()
+	s.AddProduct("Steam Keys", []DeliveryItem{{Value: "KEY-1"}, {Value: "KEY-2"}})
+	store := NewMemoryDeliveryStore()
+
+	result, err := s.DeliverOrder(ExactSubcategoryMatcher{}, store, sampleOrder())
+	if err != nil { t.Fatalf("deliver_order: %v", err) }
+	if len(result.Delivered) != 2 { t.Errorf("expected 2 items, got %d", len(result.Delivered)) }
+
+	// Duplicate
+	_, err = s.DeliverOrder(ExactSubcategoryMatcher{}, store, sampleOrder())
+	if err != ErrAlreadyDelivered { t.Errorf("expected AlreadyDelivered, got %v", err) }
+}
+
+// TestMessenger implements DeliveryMessenger for testing.
+type TestMessenger struct {
+	Sent []struct{ ChatID, Text string }
+}
+
+func (m *TestMessenger) SendDeliveryMessage(chatID, text string) (*RunnerResponse, error) {
+	m.Sent = append(m.Sent, struct{ ChatID, Text string }{chatID, text})
+	return &RunnerResponse{Success: true}, nil
+}
+
+func TestProcessPaidOrder(t *testing.T) {
+	s := NewDeliveryService()
+	s.AddProduct("Steam Keys", []DeliveryItem{{Value: "KEY-1"}, {Value: "KEY-2"}})
+	store := NewMemoryDeliveryStore()
+	messenger := &TestMessenger{}
+
+	result, err := s.ProcessPaidOrder(
+		ExactSubcategoryMatcher{}, store, messenger,
+		NewDeliveryMessageBuilder(), sampleOrder(),
+	)
+	if err != nil { t.Fatalf("process: %v", err) }
+	if result.Delivery.OrderID != "ORDER1" { t.Errorf("wrong order id: %s", result.Delivery.OrderID) }
+	if !strings.Contains(result.MessageText, "KEY-1") { t.Error("message should contain KEY-1") }
+	if len(messenger.Sent) != 1 { t.Errorf("expected 1 message sent, got %d", len(messenger.Sent)) }
+}
+
+func TestProcessPaidOrderRejectsUnpaid(t *testing.T) {
+	order := sampleOrder()
+	order.Status = OrderClosed
+
+	s := NewDeliveryService()
+	s.AddProduct("Steam Keys", []DeliveryItem{{Value: "K"}})
+	store := NewMemoryDeliveryStore()
+	messenger := &TestMessenger{}
+
+	_, err := s.ProcessPaidOrder(ExactSubcategoryMatcher{}, store, messenger, NewDeliveryMessageBuilder(), order)
+	if err == nil { t.Fatal("expected error for unpaid order") }
+	if !strings.Contains(err.Error(), "not paid") { t.Errorf("unexpected error: %v", err) }
+	if len(messenger.Sent) != 0 { t.Error("no message should be sent") }
+}
+
+// ---------------------------------------------------------------------------
+// JSONDeliveryStore
+// ---------------------------------------------------------------------------
+
+func TestJSONDeliveryStoreRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "delivery.json")
+	store := NewJSONDeliveryStore(path)
+	result := &DeliveryResult{OrderID: "ORDJSON", ProductKey: "Steam Keys", Delivered: []DeliveryItem{{Value: "KEY-JSON"}}}
+
+	if err := store.ClaimPending(result); err != nil { t.Fatalf("claim: %v", err) }
+	if err := store.CommitDelivered(result); err != nil { t.Fatalf("commit: %v", err) }
+
+	ok, err := store.ContainsOrder("ORDJSON")
+	if err != nil { t.Fatalf("contains: %v", err) }
+	if !ok { t.Error("should contain order after commit") }
 }

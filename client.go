@@ -23,8 +23,18 @@ type GoldenPaySession struct {
 	user   *UserInfo
 }
 
-func New(config *GoldenPayConfig) *GoldenPay {
+func New(config *GoldenPayConfig) (*GoldenPay, error) {
+	if err := config.Validate(); err != nil {
+		return nil, err
+	}
 	transport := &http.Transport{}
+	if config.Proxy != "" {
+		proxyURL, err := url.Parse(config.Proxy)
+		if err != nil {
+			return nil, wrapError(ErrHTTP, "invalid proxy URL", err)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
 	return &GoldenPay{
 		http: &http.Client{
 			Transport: transport,
@@ -32,7 +42,7 @@ func New(config *GoldenPayConfig) *GoldenPay {
 		},
 		config: config,
 		urls:   NewUrls(config.BaseURL),
-	}
+	}, nil
 }
 
 // Connect authenticates via golden_key cookie and parses UserInfo.

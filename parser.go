@@ -117,58 +117,56 @@ func parseOrders(htmlContent string, sellerID int64) ([]OrderInfo, error) {
 }
 
 func parseOrderItem(n *html.Node, sellerID int64) *OrderInfo {
-	href := attrValue(n, "href")
-	id := strings.TrimPrefix(href, "/orders/")
-	id = strings.TrimSuffix(id, "/")
+	o := &OrderInfo{}
 
-	status := OrderPaid
-	// Check for status indicators
+	// Order ID from div.tc-order
+	walkNodes(n, func(c *html.Node) {
+		if c.Type == html.ElementNode && c.Data == "div" && hasClass(c, "tc-order") {
+			o.ID = strings.TrimSpace(extractText(c))
+		}
+	})
+
+	// Status
 	if hasClass(n, "tc-item--closed") || nodeContains(n, "order-closed") {
-		status = OrderClosed
+		o.Status = OrderClosed
+	} else {
+		o.Status = OrderPaid
 	}
 
-	var buyerUsername string
-	var buyerID int64
-	var desc string
-	var subcat string
-	var amount int32
-
+	// Buyer info from div.media-user-name span
 	walkNodes(n, func(c *html.Node) {
 		if c.Type == html.ElementNode {
-			if hasClass(c, "media-user-link") {
-				buyerUsername = extractText(c)
-				if m := reUserID.FindStringSubmatch(attrValue(c, "href")); len(m) > 1 {
-					buyerID, _ = strconv.ParseInt(m[1], 10, 64)
-				}
-			}
-			if hasClass(c, "tc-order-desc") {
-				desc = extractText(c)
-			}
-			if hasClass(c, "tc-order-category") {
-				subcat = extractText(c)
-			}
-			if hasClass(c, "tc-order-amount") {
-				text := extractText(c)
-				text = strings.TrimSpace(strings.ReplaceAll(text, "x", ""))
-				if a, err := strconv.ParseInt(text, 10, 32); err == nil {
-					amount = int32(a)
-				}
+			if hasClass(c, "media-user-name") {
+				walkNodes(c, func(span *html.Node) {
+					if span.Type == html.ElementNode && span.Data == "span" {
+						o.BuyerUsername = strings.TrimSpace(extractText(span))
+						if href := attrValue(span, "data-href"); href != "" {
+							if m := reUserID.FindStringSubmatch(href); len(m) > 1 {
+								o.BuyerID, _ = strconv.ParseInt(m[1], 10, 64)
+							}
+						}
+					}
+				})
 			}
 		}
 	})
 
-	chatID := buildChatID(sellerID, buyerID)
+	// Description from div.order-desc
+	walkNodes(n, func(c *html.Node) {
+		if c.Type == html.ElementNode && c.Data == "div" && hasClass(c, "order-desc") {
+			o.Description = strings.TrimSpace(extractText(c))
+		}
+	})
 
-	return &OrderInfo{
-		ID:              id,
-		BuyerUsername:   strings.TrimSpace(buyerUsername),
-		BuyerID:         buyerID,
-		ChatID:          chatID,
-		Description:     strings.TrimSpace(desc),
-		SubcategoryName: strings.TrimSpace(subcat),
-		Amount:          amount,
-		Status:          status,
-	}
+	// Subcategory from div.text-muted
+	walkNodes(n, func(c *html.Node) {
+		if c.Type == html.ElementNode && c.Data == "div" && hasClass(c, "text-muted") {
+			o.SubcategoryName = strings.TrimSpace(extractText(c))
+		}
+	})
+
+	o.ChatID = buildChatID(sellerID, o.BuyerID)
+	return o
 }
 
 func parseOrderPage(htmlContent, orderID string) (*OrderPage, error) {
@@ -313,13 +311,11 @@ func parseMyOffers(htmlContent string, nodeID int64) ([]Offer, error) {
 	var offers []Offer
 	walkNodes(doc, func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "a" && hasClass(n, "tc-item") {
-			if attrValue(n, "data-offer") == "" {
-				return
-			}
-			oid, _ := strconv.ParseInt(attrValue(n, "data-offer"), 10, 64)
-			if oid == 0 {
-				return
-			}
+			oidStr := attrValue(n, "data-offer")
+			if oidStr == "" { return }
+			oid, err := strconv.ParseInt(oidStr, 10, 64)
+			if err != nil || oid == 0 { return }
+
 			o := Offer{ID: oid, NodeID: nodeID, Active: !hasClass(n, "tc-item--inactive")}
 			walkNodes(n, func(c *html.Node) {
 				if c.Type == html.ElementNode {
@@ -327,12 +323,13 @@ func parseMyOffers(htmlContent string, nodeID int64) ([]Offer, error) {
 						o.Description = strings.TrimSpace(extractText(c))
 					}
 					if hasClass(c, "tc-price") {
-						text := extractText(c)
-						if m := rePrice.FindString(text); m != "" {
-							m = strings.ReplaceAll(m, ",", ".")
+						priceStr := attrValue(c, "data-s")
+						if priceStr == "" { priceStr = extractText(c) }
+						priceStr = strings.TrimSpace(strings.ReplaceAll(priceStr, ",", "."))
+						if m := rePrice.FindString(priceStr); m != "" {
 							o.Price, _ = strconv.ParseFloat(m, 64)
 						}
-						if strings.Contains(text, "$") {
+						if strings.Contains(extractText(c), "$") {
 							o.Currency = "USD"
 						} else {
 							o.Currency = "RUB"
@@ -343,9 +340,7 @@ func parseMyOffers(htmlContent string, nodeID int64) ([]Offer, error) {
 			offers = append(offers, o)
 		}
 	})
-	if offers == nil {
-		return []Offer{}, nil
-	}
+	if offers == nil { return []Offer{}, nil }
 	return offers, nil
 }
 
@@ -358,51 +353,53 @@ func parseMarketOffers(htmlContent string, nodeID int64) ([]MarketOffer, error) 
 	var offers []MarketOffer
 	walkNodes(doc, func(n *html.Node) {
 		if n.Type == html.ElementNode && n.Data == "a" && hasClass(n, "tc-item") {
-			if attrValue(n, "data-offer") == "" {
-				return
+			m := MarketOffer{NodeID: nodeID}
+
+			// Offer ID from href
+			href := attrValue(n, "href")
+			if idStr := reDigits.FindString(href); idStr != "" {
+				m.ID, _ = strconv.ParseInt(idStr, 10, 64)
 			}
-			oid, _ := strconv.ParseInt(attrValue(n, "data-offer"), 10, 64)
-			if oid == 0 {
-				return
-			}
-			o := MarketOffer{ID: oid, NodeID: nodeID}
+			if m.ID == 0 { return }
 
 			walkNodes(n, func(c *html.Node) {
 				if c.Type == html.ElementNode {
 					if hasClass(c, "tc-desc-text") {
-						o.Description = strings.TrimSpace(extractText(c))
+						m.Description = strings.TrimSpace(extractText(c))
 					}
 					if hasClass(c, "tc-price") {
-						text := extractText(c)
-						if m := rePrice.FindString(text); m != "" {
-							m = strings.ReplaceAll(m, ",", ".")
-							o.Price, _ = strconv.ParseFloat(m, 64)
+						priceStr := attrValue(c, "data-s")
+						if priceStr == "" { priceStr = extractText(c) }
+						priceStr = strings.TrimSpace(strings.ReplaceAll(priceStr, ",", "."))
+						if p := rePrice.FindString(priceStr); p != "" {
+							m.Price, _ = strconv.ParseFloat(p, 64)
 						}
-						if strings.Contains(text, "$") {
-							o.Currency = "USD"
-						} else {
-							o.Currency = "RUB"
-						}
+						m.Currency = "RUB"
+						if strings.Contains(extractText(c), "$") { m.Currency = "USD" }
 					}
-					if hasClass(c, "tc-user") {
-						o.SellerName = extractText(c)
-						o.SellerOnline = nodeContains(c, "online")
-						if m := reUserID.FindStringSubmatch(attrValue(c, "href")); len(m) > 1 {
-							o.SellerID, _ = strconv.ParseInt(m[1], 10, 64)
-						}
+					if hasClass(c, "media-user-reviews") {
+						walkNodes(c, func(sub *html.Node) {
+							if sub.Type == html.ElementNode && hasClass(sub, "rating-mini-count") {
+								cnt, _ := strconv.ParseInt(extractText(sub), 10, 32)
+								m.SellerReviews = int32(cnt)
+							}
+						})
 					}
-					if hasClass(c, "rating-mini") {
-						ratingText := strings.ReplaceAll(extractText(c), ",", ".")
-						o.SellerRating, _ = strconv.ParseFloat(ratingText, 64)
+					if c.Data == "span" && hasClass(c, "pseudo-a") {
+						m.SellerName = strings.TrimSpace(extractText(c))
+						if href := attrValue(c, "data-href"); href != "" {
+							if idm := reUserID.FindStringSubmatch(href); len(idm) > 1 {
+								m.SellerID, _ = strconv.ParseInt(idm[1], 10, 64)
+							}
+						}
+						m.SellerOnline = nodeContains(c, "online")
 					}
 				}
 			})
-			offers = append(offers, o)
+			offers = append(offers, m)
 		}
 	})
-	if offers == nil {
-		return []MarketOffer{}, nil
-	}
+	if offers == nil { return []MarketOffer{}, nil }
 	return offers, nil
 }
 

@@ -22,7 +22,6 @@ func DefaultConfig() *GoldenPayConfig {
 		PollInterval:         2 * time.Second,
 		MaxRetries:           3,
 		RetryBaseDelay:       300 * time.Millisecond,
-		MaxConcurrentRequests: 0,
 	}
 }
 
@@ -30,4 +29,26 @@ func NewConfig(goldenKey string) *GoldenPayConfig {
 	c := DefaultConfig()
 	c.GoldenKey = goldenKey
 	return c
+}
+
+func (c *GoldenPayConfig) Validate() error {
+	if c.GoldenKey == "" {
+		return newError(ErrMissingGoldenKey, "golden key is required")
+	}
+	if c.BaseURL == "" {
+		c.BaseURL = "https://funpay.com"
+	}
+	if c.UserAgent == "" {
+		c.UserAgent = "goldenpay/1.1.0"
+	}
+	if c.PollInterval <= 0 {
+		c.PollInterval = 2 * time.Second
+	}
+	if c.MaxRetries <= 0 {
+		c.MaxRetries = 3
+	}
+	if c.RetryBaseDelay <= 0 {
+		c.RetryBaseDelay = 300 * time.Millisecond
+	}
+	return nil
 }

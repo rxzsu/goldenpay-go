@@ -26,6 +26,7 @@ func VerifyHMAC(key, data, signature []byte) bool {
 // SecureString masks its value in string output (always returns "***").
 type SecureString string
 
+func NewSecureString(s string) SecureString { return SecureString(s) }
 func (s SecureString) String() string  { return "***" }
 func (s SecureString) GoString() string { return "***" }
 func (s SecureString) Value() string    { return string(s) }

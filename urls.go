@@ -25,5 +25,6 @@ func (u *Urls) OfferSave() string     { return u.base + "/lots/offerSave" }
 func (u *Urls) LotsRaise() string     { return u.base + "/yopt/lots/raise" }
 func (u *Urls) ChatUpload() string    { return u.base + "/chat/upload" }
 func (u *Urls) ReviewReply() string   { return u.base + "/orders/reviewReply" }
+func (u *Urls) OrderReview() string   { return u.base + "/orders/review" }
 func (u *Urls) Profile(userID int64) string  { return fmt.Sprintf("%s/users/%d/", u.base, userID) }
 func (u *Urls) Withdraw() string      { return u.base + "/withdraw" }

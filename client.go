@@ -427,6 +427,21 @@ func (s *GoldenPaySession) RaiseOffers(nodeID int64) (*RaiseOffersResponse, erro
 	return parseRaiseResponse(body)
 }
 
+// LeaveReview leaves a review for a buyer.
+func (s *GoldenPaySession) LeaveReview(orderID string, rating int, text string) (*RunnerResponse, error) {
+	payload := url.Values{}
+	payload.Set("id", orderID)
+	payload.Set("rating", fmt.Sprintf("%d", rating))
+	payload.Set("text", text)
+	payload.Set("csrf_token", s.user.CSRFToken)
+	body, err := s.postForm(s.client.urls.OrderReview(), payload.Encode(),
+		s.client.urls.OrderPage(orderID), "application/json")
+	if err != nil {
+		return nil, err
+	}
+	return parseRunnerResponse(body)
+}
+
 // ReplyToReview replies to an order review.
 func (s *GoldenPaySession) ReplyToReview(orderID, text string) (*RunnerResponse, error) {
 	payload := url.Values{}

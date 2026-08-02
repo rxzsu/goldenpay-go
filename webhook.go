@@ -26,16 +26,43 @@ func DefaultWebhookConfig() *WebhookConfig {
 	}
 }
 
-// WebhookPayload carries the parsed request.
+// WebhookPayload carries the raw request context.
 type WebhookPayload struct {
 	SourceIP string
 	Body     json.RawMessage
 	Headers  map[string]string
 }
 
+type WebhookEventType string
+
+const (
+	EventNewOrder   WebhookEventType = "new_order"
+	EventNewMessage WebhookEventType = "new_message"
+	EventRaw        WebhookEventType = "raw"
+)
+
+// WebhookEvent represents a parsed webhook event.
+type WebhookEvent struct {
+	Type    WebhookEventType
+	Payload WebhookPayload
+	
+	NewOrder   *NewOrderWebhook
+	NewMessage *NewMessageWebhook
+}
+
+type NewOrderWebhook struct {
+	ID     string  `json:"id"`
+	Amount float64 `json:"amount,omitempty"`
+}
+
+type NewMessageWebhook struct {
+	ChatID string `json:"chat_id"`
+	Text   string `json:"text,omitempty"`
+}
+
 // WebhookHandler processes incoming webhook events.
 type WebhookHandler interface {
-	HandleWebhook(payload WebhookPayload) error
+	HandleWebhook(event WebhookEvent) error
 }
 
 // WebhookServer receives POST notifications.
@@ -100,7 +127,39 @@ func (s *WebhookServer) handle(w http.ResponseWriter, r *http.Request) {
 		Headers:  headers,
 	}
 
-	if err := s.handler.HandleWebhook(payload); err != nil {
+	var typeExtractor struct {
+		Type  string `json:"type"`
+		Event string `json:"event"`
+	}
+	_ = json.Unmarshal(body, &typeExtractor)
+
+	eventType := typeExtractor.Type
+	if eventType == "" {
+		eventType = typeExtractor.Event
+	}
+
+	event := WebhookEvent{
+		Payload: payload,
+	}
+
+	switch eventType {
+	case "new_order", "order":
+		event.Type = EventNewOrder
+		var obj NewOrderWebhook
+		if err := json.Unmarshal(body, &obj); err == nil {
+			event.NewOrder = &obj
+		}
+	case "new_message", "message":
+		event.Type = EventNewMessage
+		var obj NewMessageWebhook
+		if err := json.Unmarshal(body, &obj); err == nil {
+			event.NewMessage = &obj
+		}
+	default:
+		event.Type = EventRaw
+	}
+
+	if err := s.handler.HandleWebhook(event); err != nil {
 		log.Printf("webhook handler error: %v", err)
 	}
 

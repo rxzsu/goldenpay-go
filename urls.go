@@ -13,6 +13,7 @@ func (u *Urls) Home() string              { return u.base + "/" }
 func (u *Urls) Runner() string            { return u.base + "/runner/" }
 func (u *Urls) OrdersTrade() string       { return u.base + "/orders/trade" }
 func (u *Urls) OrderPage(id string) string { return u.base + "/orders/" + id + "/" }
+func (u *Urls) OrdersRefund() string      { return u.base + "/orders/refund" }
 func (u *Urls) LotsCalc() string          { return u.base + "/lots/calc" }
 func (u *Urls) LotsHome() string          { return u.base + "/lots/" }
 func (u *Urls) LotsPage(nodeID int64) string      { return fmt.Sprintf("%s/lots/%d/", u.base, nodeID) }

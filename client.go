@@ -185,6 +185,20 @@ func (s *GoldenPaySession) FetchOrderPage(orderID string) (*OrderPage, error) {
 	return parseOrderPage(html, orderID)
 }
 
+// RefundOrder refunds an order.
+func (s *GoldenPaySession) RefundOrder(orderID string) (*RunnerResponse, error) {
+	payload := url.Values{}
+	payload.Set("csrf_token", s.user.CSRFToken)
+	payload.Set("id", orderID)
+
+	body, err := s.postForm(s.client.urls.OrdersRefund(), payload.Encode(),
+		s.client.urls.OrderPage(orderID), "application/json, text/javascript, */*; q=0.01")
+	if err != nil {
+		return nil, err
+	}
+	return parseRunnerResponse(body)
+}
+
 // CalculateStatistics computes totals from filtered orders.
 func (s *GoldenPaySession) CalculateStatistics(opts *FetchOrderOptions) (*StoreStatistics, error) {
 	orders, err := s.FetchOrdersWith(opts)
@@ -272,7 +286,7 @@ func (s *GoldenPaySession) CreateOffer(nodeID int64, details OfferEdit) (*OfferS
 	return s.saveOffer(0, nodeID, &details, s.client.urls.LotsTrade(nodeID))
 }
 
-// DeactivateAllOffers deactivates all active offers in a category.
+// DeactivateAllOffers sets active=false for all offers in a node.
 func (s *GoldenPaySession) DeactivateAllOffers(nodeID int64) error {
 	offers, err := s.FetchMyOffers(nodeID)
 	if err != nil {
@@ -287,6 +301,13 @@ func (s *GoldenPaySession) DeactivateAllOffers(nodeID int64) error {
 		}
 	}
 	return nil
+}
+
+// DeleteOffer deletes a specific offer by ID.
+func (s *GoldenPaySession) DeleteOffer(nodeID, offerID int64) error {
+	trueVal := true
+	_, err := s.EditOffer(nodeID, offerID, OfferEdit{Deleted: &trueVal})
+	return err
 }
 
 // DeleteAllOffers deletes all offers in a category.
